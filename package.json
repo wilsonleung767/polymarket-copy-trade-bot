@@ -2,8 +2,6 @@
   "name": "polymarket-copytrade-bot",
   "version": "1.0.0",
   "description": "",
-  "license": "ISC",
-  "author": "",
   "type": "module",
   "main": "index.js",
   "scripts": {

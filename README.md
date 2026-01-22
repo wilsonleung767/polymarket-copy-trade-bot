@@ -119,7 +119,3 @@ Total Spent: $25.50
 - Check that your target addresses are active traders
 - Verify WebSocket connection is established
 - Increase `RUN_DURATION_MS` for longer monitoring
-
-## License
-
-ISC
