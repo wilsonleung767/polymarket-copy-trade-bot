@@ -1,0 +1,22 @@
+{
+  "name": "polymarket-copytrade-bot",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "copy-trade": "tsx scripts/smart-money/04-auto-copy-trading.ts"
+  },
+  "dependencies": {
+    "@catalyst-team/poly-sdk": "^0.4.6",
+    "dotenv": "^17.2.3",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3"
+  }
+}
