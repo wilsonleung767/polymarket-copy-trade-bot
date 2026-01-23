@@ -32,11 +32,14 @@ const DRY_RUN = false;                    // true = test mode (no real trades), 
 // Trade Sizing
 const SIZE_SCALE = 1;                     // Percentage of their trade size to copy (1 = 100%, 0.1 = 10%)
 const MAX_SIZE_PER_TRADE = 10;            // Maximum USDC per trade (safety limit)
-const MIN_TRADE_SIZE = 1;                // Minimum trade size to copy (filter small trades)
+const MIN_TRADE_SIZE = 0.1;                // Minimum trade size to copy (filter small trades)
 
 // Risk Management
 const MAX_SLIPPAGE = 0.03;                // Maximum slippage tolerance (0.03 = 3%)
 const ORDER_TYPE = 'FOK';                 // FOK = Fill or Kill, FAK = Fill and Kill
+
+// WebSocket Management
+const RECONNECT_MS = 60000;              // Reconnect WebSocket every 60 seconds
 
 // Target Wallets - Add addresses to follow
 const TARGET_ADDRESSES = [
@@ -90,6 +93,7 @@ async function main() {
   console.log(`Size Scale: ${SIZE_SCALE * 100}%`);
   console.log(`Max per trade: $${MAX_SIZE_PER_TRADE}`);
   console.log(`Min trade size: $${MIN_TRADE_SIZE}`);
+  console.log(`Reconnect interval: ${RECONNECT_MS / 1000}s`);
   console.log('='.repeat(60));
 
   // Check for private key
@@ -131,8 +135,8 @@ async function main() {
   const ourAddress = tradingService.getAddress().toLowerCase();
   console.log(`  Our wallet: ${ourAddress.slice(0, 10)}...${ourAddress.slice(-6)}`);
 
-  try {
-    // Connect WebSocket
+  // Helper: Connect to WebSocket
+  async function connectRealtime() {
     console.log('\n[WebSocket] Connecting...');
     realtimeService.connect();
     await new Promise<void>((resolve, reject) => {
@@ -143,8 +147,10 @@ async function main() {
         resolve();
       });
     });
+  }
 
-    // Start auto copy trading
+  // Helper: Start auto copy trading subscription
+  async function startAutoCopy() {
     console.log('\n[Auto Copy Trading] Starting auto copy trading...');
 
     const subscription = await smartMoneyService.startAutoCopyTrading({
@@ -193,6 +199,38 @@ async function main() {
       },
     });
 
+    return subscription;
+  }
+
+  // Reconnection state
+  let subscription: any = null;
+  let reconnecting = false;
+  let reconnectInterval: NodeJS.Timeout | null = null;
+
+  // Graceful shutdown handler
+  const shutdown = async () => {
+    console.log('\n\n🛑 Shutting down...');
+    
+    if (reconnectInterval) {
+      clearInterval(reconnectInterval);
+    }
+    
+    subscription?.stop();
+    smartMoneyService.disconnect();
+    realtimeService.disconnect();
+    
+    console.log('✅ Cleanup complete');
+    process.exit(0);
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  try {
+    // Initial connection
+    await connectRealtime();
+    subscription = await startAutoCopy();
+
     console.log(`\n✅ Auto copy trading started!`);
     console.log(`   Tracking ${subscription.targetAddresses.length} wallets`);
     console.log(`   Target addresses:`);
@@ -217,6 +255,7 @@ async function main() {
         `• Min Trade Size: $${MIN_TRADE_SIZE}`,
         `• Max Slippage: ${MAX_SLIPPAGE * 100}%`,
         `• Order Type: ${ORDER_TYPE}`,
+        `• Reconnect Interval: ${RECONNECT_MS / 1000}s`,
         '',
         `**Tracking ${subscription.targetAddresses.length} Target${subscription.targetAddresses.length > 1 ? 's' : ''}:**`,
         ...subscription.targetAddresses.map((addr, i) => 
@@ -231,49 +270,40 @@ async function main() {
 
     console.log('\n⏳ Listening for trades... (Press Ctrl+C to stop)\n');
 
-    // Run for specified duration
-    // await new Promise<void>((resolve) => {
-    //   const interval = setInterval(() => {
-    //     const stats = subscription.getStats();
-    //     const elapsed = Math.floor((Date.now() - stats.startTime) / 1000);
-    //     console.log(`  [${elapsed}s] Detected: ${stats.tradesDetected}, Executed: ${stats.tradesExecuted}, Skipped: ${stats.tradesSkipped}, Failed: ${stats.tradesFailed}`);
-    //   }, 30000); // Log stats every 30 seconds
+    // Setup automatic reconnection every 60 seconds
+    reconnectInterval = setInterval(async () => {
+      if (reconnecting) return; // Skip if already reconnecting
+      
+      reconnecting = true;
+      try {
+        console.log('\n[Reconnect] Reconnecting WebSocket...');
+        
+        // Stop current subscription
+        subscription?.stop();
+        
+        // Disconnect services
+        smartMoneyService.disconnect();
+        realtimeService.disconnect();
+        
+        // Small delay to ensure clean disconnect
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Reconnect
+        await connectRealtime();
+        subscription = await startAutoCopy();
+        
+        console.log('  ✅ Reconnection successful\n');
+        
+      } catch (error: any) {
+        console.error('  ❌ Reconnection failed:', error.message);
+      
+        await shutdown();
+      } finally {
+        reconnecting = false;
+      }
+    }, RECONNECT_MS);
 
-    //   setTimeout(() => {
-    //     clearInterval(interval);
-    //     resolve();
-    //   }, RUN_DURATION_MS);
-    // });
 
-    // // Final stats
-    // const finalStats = subscription.getStats();
-    // console.log('\n' + '='.repeat(60));
-    // console.log('📊 Session Statistics');
-    // console.log('='.repeat(60));
-    // console.log(`  Runtime: ${Math.floor((Date.now() - finalStats.startTime) / 1000)}s`);
-    // console.log(`  Trades Detected: ${finalStats.tradesDetected}`);
-    // console.log(`  Trades Executed: ${finalStats.tradesExecuted}`);
-    // console.log(`  Trades Skipped: ${finalStats.tradesSkipped}`);
-    // console.log(`  Trades Failed: ${finalStats.tradesFailed}`);
-    // console.log(`  Total Spent: $${finalStats.totalUsdcSpent.toFixed(2)}`);
-
-    // // Send final stats to Discord
-    // discord?.notify(
-    //   [
-    //     '📊 **Copy Trading Session Complete**',
-    //     `Duration: ${Math.floor((Date.now() - finalStats.startTime) / 1000)}s`,
-    //     `Detected: ${finalStats.tradesDetected} | Executed: ${finalStats.tradesExecuted}`,
-    //     `Skipped: ${finalStats.tradesSkipped} | Failed: ${finalStats.tradesFailed}`,
-    //     `Total Spent: $${finalStats.totalUsdcSpent.toFixed(2)}`,
-    //   ].join('\n')
-    // );
-
-    // // Cleanup
-    // subscription.stop();
-    // smartMoneyService.disconnect();
-    // realtimeService.disconnect();
-
-    // console.log('\n✅ Test complete');
 
   } catch (error: any) {
     console.error('\n❌ Error:', error.message);
