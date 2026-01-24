@@ -38,8 +38,6 @@ import {
 // Target wallet addresses to track (add/remove addresses as needed)
 const TARGET_ADDRESSES = [
   "0x6297b93ea37ff92a57fd636410f3b71ebf74517e",
-  // Add more addresses here:
-  // "0x...",
 ];
 
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
@@ -207,13 +205,20 @@ async function resolveTraderProfile(
 
 async function resolveMarketName(
   gamma: GammaApiClient,
-  marketSlug: string
+  marketSlug: string,
+  eventSlug?: string
 ): Promise<{ name: string; link: string }> {
+  // Construct proper URL: https://polymarket.com/event/{eventSlug}/{marketSlug}
+  // If no eventSlug, fallback to: https://polymarket.com/event/{marketSlug}
+  const link = eventSlug 
+    ? `https://polymarket.com/event/${eventSlug}/${marketSlug}`
+    : `https://polymarket.com/event/${marketSlug}`;
+
   // Check cache first
   if (marketCache.has(marketSlug)) {
     return {
       name: marketCache.get(marketSlug)!,
-      link: `https://polymarket.com/event/${marketSlug}`,
+      link,
     };
   }
 
@@ -224,7 +229,7 @@ async function resolveMarketName(
       marketCache.set(marketSlug, market.question);
       return {
         name: market.question,
-        link: `https://polymarket.com/event/${marketSlug}`,
+        link,
       };
     }
   } catch (error) {
@@ -234,7 +239,7 @@ async function resolveMarketName(
   // Fallback to slug
   return {
     name: marketSlug,
-    link: `https://polymarket.com/event/${marketSlug}`,
+    link,
   };
 }
 
@@ -332,17 +337,19 @@ async function main() {
         if (!traderAddress || !targetSet.has(traderAddress)) {
           return;
         }
-
+    
         // Deduplicate by transaction hash
         if (isSeenTransaction(trade.transactionHash)) {
           return;
         }
 
-        // Log trade
-        console.log(`\n📈 Trade detected: ${trade.side} ${trade.outcome} @ $${trade.price.toFixed(4)}`);
+        // Log trade with colored outcome (green for YES, red for NO)
+        const outcomeColor = trade.outcome === 'YES' ? '\x1b[32m' : '\x1b[31m'; // green : red
+        const resetColor = '\x1b[0m';
+        console.log(`\n📈 Trade detected: ${trade.side} ${outcomeColor}${trade.outcome}${resetColor} @ $${trade.price.toFixed(4)}`);
 
         // Resolve market metadata
-        const { name, link } = await resolveMarketName(gamma, trade.marketSlug);
+        const { name, link } = await resolveMarketName(gamma, trade.marketSlug, trade.eventSlug);
         
         // Resolve trader profile
         const traderProfile = await resolveTraderProfile(dataApi, traderAddress);
@@ -357,21 +364,23 @@ async function main() {
         // BUY = Green (#00ff00), SELL = Red (#ff0000)
         const isBuy = trade.side === 'BUY';
         const color = isBuy ? 0x00ff00 : 0xff0000;
-        const emoji = isBuy ? '🟢' : '🔴';
         const actionText = isBuy ? 'BUY' : 'SELL';
-
+        
+        // Add tick emoji for YES, cross for NO
+        const outcomeEmoji = trade.outcome.toLowerCase() =='yes' || trade.outcome.toLowerCase() == "up" ? '✅' : '❌';
+        
         // Build Discord embed with rich formatting
         const embed: DiscordEmbed = {
-          title: `${emoji} ${actionText} ${trade.outcome}`,
+          title: `${actionText} ${trade.outcome}${outcomeEmoji} `,
           url: link,
           color: color,
           fields: [
             {
-              name: '👤 Trader',
-              value: traderProfile.userName && traderProfile.profileUrl
-                ? `[${traderProfile.userName}](${traderProfile.profileUrl})\n\`${traderAddress.slice(0, 10)}...${traderAddress.slice(-8)}\``
-                : `\`${traderAddress.slice(0, 10)}...${traderAddress.slice(-8)}\``,
-              inline: false,
+              name: `👤 ` + (traderProfile.userName && traderProfile.profileUrl
+                ? `[${traderProfile.userName}](${traderProfile.profileUrl})`
+                : `\`${traderAddress.slice(0, 10)}...${traderAddress.slice(-8)}\``),
+              value: "",
+              inline: true,
             },
             {
               name: '📊 Market',

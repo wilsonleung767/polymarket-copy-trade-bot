@@ -6,8 +6,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "copy-trade": "tsx scripts/smart-money/04-auto-copy-trading.ts",
-    "signal-bot": "tsx scripts/trade_signal.ts"
+    "copy-trade": "tsx scripts/copy_trade_bot.ts",
+    "signal-bot": "tsx scripts/trade_signal_bot.ts"
   },
   "dependencies": {
     "@catalyst-team/poly-sdk": "^0.4.6",

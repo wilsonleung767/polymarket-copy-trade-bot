@@ -40,7 +40,8 @@ const ORDER_TYPE = 'FOK';                 // FOK = Fill or Kill, FAK = Fill and 
 
 // Target Wallets - Add addresses to follow
 const TARGET_ADDRESSES = [
-  "0x6297b93ea37ff92a57fd636410f3b71ebf74517e"
+  "0x6297b93ea37ff92a57fd636410f3b71ebf74517e",
+  "0x7994956c7f4ca3754b449d4551970053d280c8c3"
 ];
 
 // ============================================================
@@ -168,18 +169,23 @@ async function main() {
         console.log('\n📈 Copy Trade Executed:');
         console.log(`  Trader: ${trade.traderName || trade.traderAddress.slice(0, 10)}...`);
         console.log(`  Market: ${trade.marketSlug}`);
-        console.log(`  ${trade.side} ${trade.outcome} @ $${trade.price.toFixed(4)}`);
+        
+        // Color code outcome: green for YES, red for NO
+        const outcomeColor = trade.outcome === 'YES' ? '\x1b[32m' : '\x1b[31m'; // green : red
+        const resetColor = '\x1b[0m';
+        console.log(`  ${trade.side} ${outcomeColor}${trade.outcome}${resetColor} @ $${trade.price.toFixed(4)}`);
         console.log(`  Result: ${result.success ? '✅ Success' : '❌ Failed'}`);
         if (result.orderId) console.log(`  OrderId: ${result.orderId}`);
         if (result.errorMsg) console.log(`  Error: ${result.errorMsg}`);
 
-        // Send to Discord
+        // Send to Discord with tick emoji for YES, cross for NO
+        const outcomeEmoji = trade.outcome === 'YES' ? '✅' : '❌';
         discord?.notify(
           [
             `**Copy Trade ${result.success ? '✅ SUCCESS' : '❌ FAIL'}**`,
             `Trader: \`${trade.traderName || trade.traderAddress}\``,
             `Market: ${trade.marketSlug || 'unknown'}`,
-            `${trade.side} ${trade.outcome || 'unknown'} @ $${trade.price.toFixed(4)} (size: $${trade.size.toFixed(2)})`,
+            `${trade.side} ${outcomeEmoji} ${trade.outcome || 'unknown'} @ $${trade.price.toFixed(4)} (size: $${trade.size.toFixed(2)})`,
             result.orderId ? `OrderId: \`${result.orderId}\`` : null,
             result.errorMsg ? `Error: ${result.errorMsg}` : null,
           ].filter(Boolean).join('\n')
