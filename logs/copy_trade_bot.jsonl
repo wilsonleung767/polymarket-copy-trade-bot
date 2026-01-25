@@ -1,0 +1,3 @@
+{"ts":"2026-01-25T05:51:02.358Z","event":"startup","mode":"live","ourWallet":"0xd04b886bff722abb7ab617a2f843a002398a38f2","sizeScale":0.99,"maxSizePerTrade":2,"minTradeSize":1,"maxSlippage":0.06,"orderType":"FOK","targets":["0x6297b93ea37ff92a57fd636410f3b71ebf74517e"]}
+{"ts":"2026-01-25T05:51:03.037Z","event":"ws_connected"}
+{"ts":"2026-01-25T05:51:03.039Z","event":"copytrading_started","tracking":1}

@@ -11,6 +11,7 @@
  */
 
 import 'dotenv/config';
+import path from 'node:path';
 import {
   SmartMoneyService,
   WalletService,
@@ -21,6 +22,11 @@ import {
   RateLimiter,
   createUnifiedCache,
 } from '@catalyst-team/poly-sdk';
+import {
+  createJsonlFileLogger,
+  extractErrorDetails,
+  setupConsoleErrorInterceptor,
+} from '../logger.js';
 
 // ============================================================
 // CONFIGURATION - Edit these values to customize your bot
@@ -30,18 +36,17 @@ import {
 const DRY_RUN = false;                    // true = test mode (no real trades), false = live trading
 
 // Trade Sizing
-const SIZE_SCALE = 1;                     // Percentage of their trade size to copy (1 = 100%, 0.1 = 10%)
-const MAX_SIZE_PER_TRADE = 10;            // Maximum USDC per trade (safety limit)
+const SIZE_SCALE = 0.99;                     // Percentage of their trade size to copy (1 = 100%, 0.1 = 10%)
+const MAX_SIZE_PER_TRADE = 2;            // Maximum USDC per trade (safety limit)
 const MIN_TRADE_SIZE = 1;                // Minimum trade size to copy (filter small trades)
 
 // Risk Management
-const MAX_SLIPPAGE = 0.03;                // Maximum slippage tolerance (0.03 = 3%)
+const MAX_SLIPPAGE = 0.06;                // Maximum slippage tolerance (0.03 = 3%)
 const ORDER_TYPE = 'FOK';                 // FOK = Fill or Kill, FAK = Fill and Kill
 
 // Target Wallets - Add addresses to follow
 const TARGET_ADDRESSES = [
   "0x6297b93ea37ff92a57fd636410f3b71ebf74517e",
-  "0x7994956c7f4ca3754b449d4551970053d280c8c3"
 ];
 
 // ============================================================
@@ -83,6 +88,12 @@ function createDiscordWebhookNotifier(webhookUrl: string) {
 }
 
 async function main() {
+  const logFile = process.env.LOG_FILE || path.join('logs', 'copy_trade_bot.jsonl');
+  const fileLog = createJsonlFileLogger(logFile);
+
+  // Setup console.error interceptor to redact CLOB Client errors
+  setupConsoleErrorInterceptor(fileLog);
+
   console.log('='.repeat(60));
   console.log('🤖 Auto Copy Trading - Smart Money Follower');
   console.log('='.repeat(60));
@@ -96,12 +107,15 @@ async function main() {
   // Check for private key
   const privateKey = process.env.PRIVATE_KEY || process.env.POLY_PRIVATE_KEY;
   if (!privateKey) {
+    fileLog.write('fatal_error', {
+      message: 'PRIVATE_KEY or POLY_PRIVATE_KEY not found in .env',
+    });
     console.error('❌ PRIVATE_KEY or POLY_PRIVATE_KEY not found in .env');
     process.exit(1);
   }
 
   // Initialize Discord notifier (optional)
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  const webhookUrl = process.env.TEST_DISCORD_WEBHOOK_URL;
   const discord = webhookUrl ? createDiscordWebhookNotifier(webhookUrl) : null;
   
   if (discord) {
@@ -132,6 +146,17 @@ async function main() {
   const ourAddress = tradingService.getAddress().toLowerCase();
   console.log(`  Our wallet: ${ourAddress.slice(0, 10)}...${ourAddress.slice(-6)}`);
 
+  fileLog.write('startup', {
+    mode: DRY_RUN ? 'dry_run' : 'live',
+    ourWallet: ourAddress,
+    sizeScale: SIZE_SCALE,
+    maxSizePerTrade: MAX_SIZE_PER_TRADE,
+    minTradeSize: MIN_TRADE_SIZE,
+    maxSlippage: MAX_SLIPPAGE,
+    orderType: ORDER_TYPE,
+    targets: TARGET_ADDRESSES,
+  });
+
   try {
     // Connect WebSocket
     console.log('\n[WebSocket] Connecting...');
@@ -141,6 +166,7 @@ async function main() {
       realtimeService.once('connected', () => {
         clearTimeout(timeout);
         console.log('  ✅ WebSocket connected');
+        fileLog.write('ws_connected');
         resolve();
       });
     });
@@ -166,6 +192,24 @@ async function main() {
 
       // Callbacks
       onTrade: (trade, result) => {
+        // Extract error details from various possible shapes
+        const errorDetails = extractErrorDetails(result);
+        
+        fileLog.write('trade_result', {
+          traderName: trade.traderName || null,
+          traderAddress: trade.traderAddress,
+          marketSlug: trade.marketSlug,
+          side: trade.side,
+          outcome: trade.outcome,
+          price: trade.price,
+          size: trade.size,
+          success: result.success,
+          orderId: result.orderId || null,
+          errorMsg: errorDetails.errorMsg,
+          errorStatus: errorDetails.errorStatus,
+          errorSource: errorDetails.errorSource,
+        });
+
         console.log('\n📈 Copy Trade Executed:');
         console.log(`  Trader: ${trade.traderName || trade.traderAddress.slice(0, 10)}...`);
         console.log(`  Market: ${trade.marketSlug}`);
@@ -176,27 +220,41 @@ async function main() {
         console.log(`  ${trade.side} ${outcomeColor}${trade.outcome}${resetColor} @ $${trade.price.toFixed(4)}`);
         console.log(`  Result: ${result.success ? '✅ Success' : '❌ Failed'}`);
         if (result.orderId) console.log(`  OrderId: ${result.orderId}`);
-        if (result.errorMsg) console.log(`  Error: ${result.errorMsg}`);
+        if (errorDetails.errorMsg) {
+          console.log(`  Error: ${errorDetails.errorMsg}`);
+          if (errorDetails.errorStatus) {
+            console.log(`  Status: ${errorDetails.errorStatus}`);
+          }
+        }
 
         // Send to Discord with tick emoji for YES, cross for NO
-        const outcomeEmoji = trade.outcome === 'YES' ? '✅' : '❌';
+        const outcomeEmoji = trade?.outcome?.toLowerCase() =='yes' || trade?.outcome?.toLowerCase() == "up" ? '✅' : '❌';
         discord?.notify(
           [
             `**Copy Trade ${result.success ? '✅ SUCCESS' : '❌ FAIL'}**`,
             `Trader: \`${trade.traderName || trade.traderAddress}\``,
             `Market: ${trade.marketSlug || 'unknown'}`,
-            `${trade.side} ${outcomeEmoji} ${trade.outcome || 'unknown'} @ $${trade.price.toFixed(4)} (size: $${trade.size.toFixed(2)})`,
+            `${trade.side} ${trade.outcome || 'unknown'} ${outcomeEmoji} @ $${trade.price.toFixed(4)} (size: $${trade.size.toFixed(2)})`,
             result.orderId ? `OrderId: \`${result.orderId}\`` : null,
-            result.errorMsg ? `Error: ${result.errorMsg}` : null,
+            errorDetails.errorMsg ? `Error: ${errorDetails.errorMsg}` : null,
           ].filter(Boolean).join('\n')
         );
       },
       onError: (error) => {
+        fileLog.write('copytrading_error', {
+          message: error.message,
+          stack: error.stack || null,
+          cause: (error as any).cause ? String((error as any).cause) : null,
+        });
         console.error('\n❌ Copy Trading Error:', error.message);
         
         // Send to Discord
         discord?.notify(`❌ **Copy Trading Error**\n${error.message}`);
       },
+    });
+
+    fileLog.write('copytrading_started', {
+      tracking: subscription.targetAddresses.length,
     });
 
     console.log(`\n✅ Auto copy trading started!`);
@@ -238,6 +296,9 @@ async function main() {
     console.log('\n⏳ Listening for trades... (Press Ctrl+C to stop)\n');
 
   } catch (error: any) {
+    fileLog.write('fatal_error', {
+      message: error?.message || String(error),
+    });
     console.error('\n❌ Error:', error.message);
     discord?.notify(`❌ **Fatal Error**\n${error.message}`);
     
