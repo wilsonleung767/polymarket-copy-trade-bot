@@ -98,6 +98,11 @@ interface DiscordEmbed {
   footer?: { text: string };
   timestamp?: string;
   url?: string;
+  author?: {
+    name: string;
+    url?: string;
+    icon_url?: string;
+  };
 }
 
 function createDiscordWebhookNotifier(webhookUrl: string) {
@@ -374,14 +379,15 @@ async function main() {
           title: `${actionText} ${trade.outcome}${outcomeEmoji} `,
           url: link,
           color: color,
+          author: traderProfile.userName && traderProfile.profileUrl
+            ? {
+                name: `👤 ${traderProfile.userName}`,
+                url: traderProfile.profileUrl,
+              }
+            : {
+                name: `👤 ${traderAddress.slice(0, 10)}...${traderAddress.slice(-8)}`,
+              },
           fields: [
-            {
-              name: `👤 ` + (traderProfile.userName && traderProfile.profileUrl
-                ? `[${traderProfile.userName}](${traderProfile.profileUrl})`
-                : `\`${traderAddress.slice(0, 10)}...${traderAddress.slice(-8)}\``),
-              value: "",
-              inline: true,
-            },
             {
               name: '📊 Market',
               value: `[${name}](${link})`,
