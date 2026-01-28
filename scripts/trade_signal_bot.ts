@@ -13,10 +13,13 @@
  * - UTC+8 timezone for timestamps
  *
  * Configuration:
- * - TARGET_ADDRESSES: Array of wallet addresses to track (hardcoded in script)
+ * - TARGET_ADDRESSES: Array of wallet addresses to track (hardcoded in script, fallback mode)
  * 
  * Environment Variables:
- * - DISCORD_WEBHOOK_URL: Discord webhook URL (required)
+ * - DISCORD_WEBHOOK_URL: Discord webhook URL (required for fallback/legacy mode)
+ * - BROADCAST_NODES_JSON: JSON array for multi-node routing (optional)
+ *     Format: [{"name": "NodeA", "webhookEnvKey": "DISCORD_WEBHOOK_NODE_A", "targets": ["0x..."]}]
+ * - DISCORD_WEBHOOK_NODE_*: Individual webhook URLs referenced by nodes
  *
  * Run: pnpm exec tsx scripts/trade_signal.ts
  */
@@ -41,6 +44,22 @@ const TARGET_ADDRESSES = [
 ];
 
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const BROADCAST_NODES_JSON = process.env.BROADCAST_NODES_JSON;
+
+// ============================================================
+// BROADCAST NODE CONFIGURATION
+// ============================================================
+
+interface BroadcastNode {
+  name: string;
+  webhookEnvKey: string;
+  targets: string[];
+}
+
+interface DiscordNotifier {
+  notify(content: string): void;
+  notifyEmbed(embed: DiscordEmbed): void;
+}
 
 // Transaction deduplication - keep last 2000 tx hashes
 const MAX_SEEN_TX = 2000;
@@ -57,34 +76,135 @@ interface TraderProfile {
 const traderProfileCache = new Map<string, TraderProfile>();
 
 // ============================================================
-// VALIDATION
+// VALIDATION & ROUTING SETUP
 // ============================================================
 
-// Normalize and validate target addresses
-const targetSet = new Set<string>();
-for (const addr of TARGET_ADDRESSES) {
+// Parse and validate broadcast nodes configuration
+let broadcastNodes: BroadcastNode[] = [];
+const addressToNotifier = new Map<string, DiscordNotifier>();
+const allNotifiers: DiscordNotifier[] = [];
+let useLegacyMode = false;
+
+function normalizeAddress(addr: string): string | null {
   const normalized = addr.toLowerCase().trim();
   
   // Basic validation: must start with 0x and be 42 chars
   if (!normalized.match(/^0x[0-9a-f]{40}$/)) {
-    console.error(`❌ Invalid address format: ${addr}`);
+    return null;
+  }
+  
+  return normalized;
+}
+
+if (BROADCAST_NODES_JSON) {
+  // Multi-node mode: parse JSON configuration
+  try {
+    const parsed = JSON.parse(BROADCAST_NODES_JSON);
+    
+    if (!Array.isArray(parsed)) {
+      console.error('❌ BROADCAST_NODES_JSON must be an array');
+      process.exit(1);
+    }
+    
+    broadcastNodes = parsed;
+    
+    // Validate and build routing map
+    const addressRegistry = new Map<string, string>(); // address -> node name (for duplicate detection)
+    
+    for (const node of broadcastNodes) {
+      // Validate node structure
+      if (!node.name || !node.webhookEnvKey || !Array.isArray(node.targets)) {
+        console.error(`❌ Invalid node config: ${JSON.stringify(node)}`);
+        console.error('   Required: {name, webhookEnvKey, targets}');
+        process.exit(1);
+      }
+      
+      // Resolve webhook URL from env
+      const webhookUrl = process.env[node.webhookEnvKey];
+      if (!webhookUrl) {
+        console.error(`❌ Webhook env var not found: ${node.webhookEnvKey}`);
+        console.error(`   Add to .env: ${node.webhookEnvKey}=https://discord.com/api/webhooks/...`);
+        process.exit(1);
+      }
+      
+      // Create notifier for this node
+      const notifier = createDiscordWebhookNotifier(webhookUrl);
+      allNotifiers.push(notifier);
+      
+      // Normalize and validate target addresses
+      for (const addr of node.targets) {
+        const normalized = normalizeAddress(addr);
+        
+        if (!normalized) {
+          console.error(`❌ Invalid address format in node "${node.name}": ${addr}`);
+          process.exit(1);
+        }
+        
+        // Enforce 1-to-1 mapping: check for duplicate addresses across nodes
+        if (addressRegistry.has(normalized)) {
+          console.error(`❌ Duplicate address detected: ${addr}`);
+          console.error(`   Already assigned to node "${addressRegistry.get(normalized)}"`);
+          console.error(`   Cannot assign to node "${node.name}" (1-to-1 mapping enforced)`);
+          process.exit(1);
+        }
+        
+        // Register address -> notifier mapping
+        addressRegistry.set(normalized, node.name);
+        addressToNotifier.set(normalized, notifier);
+      }
+    }
+    
+    if (addressToNotifier.size === 0) {
+      console.error('❌ No valid target addresses found in BROADCAST_NODES_JSON');
+      console.error('   Add at least one target address to a node');
+      process.exit(1);
+    }
+    
+    console.log(`✅ Multi-node mode: ${broadcastNodes.length} nodes, ${addressToNotifier.size} unique addresses`);
+    
+  } catch (error) {
+    console.error('❌ Failed to parse BROADCAST_NODES_JSON:', error);
+    console.error('   Expected format: [{"name":"NodeA","webhookEnvKey":"DISCORD_WEBHOOK_NODE_A","targets":["0x..."]}]');
+    process.exit(1);
+  }
+} else {
+  // Legacy mode: use TARGET_ADDRESSES + DISCORD_WEBHOOK_URL
+  useLegacyMode = true;
+  
+  if (!DISCORD_WEBHOOK_URL) {
+    console.error('❌ DISCORD_WEBHOOK_URL not found in .env');
+    console.error('   Add: DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...');
+    console.error('   Or configure BROADCAST_NODES_JSON for multi-node mode');
     process.exit(1);
   }
   
-  targetSet.add(normalized);
+  // Create single notifier for legacy mode
+  const legacyNotifier = createDiscordWebhookNotifier(DISCORD_WEBHOOK_URL);
+  allNotifiers.push(legacyNotifier);
+  
+  // Normalize and validate target addresses
+  for (const addr of TARGET_ADDRESSES) {
+    const normalized = normalizeAddress(addr);
+    
+    if (!normalized) {
+      console.error(`❌ Invalid address format: ${addr}`);
+      process.exit(1);
+    }
+    
+    addressToNotifier.set(normalized, legacyNotifier);
+  }
+  
+  if (addressToNotifier.size === 0) {
+    console.error('❌ No valid target addresses configured');
+    console.error('   Update TARGET_ADDRESSES in scripts/trade_signal.ts');
+    process.exit(1);
+  }
+  
+  console.log(`✅ Legacy mode: ${addressToNotifier.size} addresses -> single webhook`);
 }
 
-if (targetSet.size === 0) {
-  console.error('❌ No valid target addresses configured');
-  console.error('   Update TARGET_ADDRESSES in scripts/trade_signal.ts');
-  process.exit(1);
-}
-
-if (!DISCORD_WEBHOOK_URL) {
-  console.error('❌ DISCORD_WEBHOOK_URL not found in .env');
-  console.error('   Add: DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...');
-  process.exit(1);
-}
+// Get all monitored addresses
+const targetSet = new Set(addressToNotifier.keys());
 
 // ============================================================
 // DISCORD WEBHOOK NOTIFIER
@@ -278,6 +398,7 @@ async function main() {
   console.log('📊 Real-Time Trade Activity Tracker');
   console.log('='.repeat(60));
   console.log(`Target Addresses: ${targetSet.size}`);
+  console.log(`Broadcast Mode: ${useLegacyMode ? 'Legacy (single webhook)' : 'Multi-node'}`);
   
   // Show first 3 addresses (shortened)
   const displayAddresses = Array.from(targetSet).slice(0, 3);
@@ -290,9 +411,6 @@ async function main() {
   
   console.log(`Timezone: UTC+8 (Asia/Shanghai)`);
   console.log('='.repeat(60));
-
-  // Initialize Discord notifier
-  const discord = createDiscordWebhookNotifier(DISCORD_WEBHOOK_URL ??'');
 
   // Initialize SDK clients
   console.log('\n[Init] Initializing SDK clients...');
@@ -422,10 +540,14 @@ async function main() {
           timestamp: new Date(trade.timestamp).toISOString(),
         };
 
-        // Send to Discord
-        discord.notifyEmbed(embed);
-
-        console.log('  ✅ Notification sent to Discord');
+        // Send to Discord via address-based routing
+        const notifier = addressToNotifier.get(traderAddress);
+        if (notifier) {
+          notifier.notifyEmbed(embed);
+          console.log('  ✅ Notification sent to Discord');
+        } else {
+          console.error(`  ⚠️  No notifier found for address ${traderAddress}`);
+        }
       },
       onError: (error: Error) => {
         console.error('\n❌ Activity Stream Error:', error.message);
@@ -494,11 +616,17 @@ async function main() {
         value: '✅ Listening for trades...',
         inline: true,
       },
+      {
+        name: '🔊 Mode',
+        value: useLegacyMode ? 'Legacy (1 webhook)' : `Multi-node (${broadcastNodes.length} nodes)`,
+        inline: true,
+      },
     ],
     timestamp: new Date().toISOString(),
   };
 
-  discord.notifyEmbed(startupEmbed);
+  // Broadcast startup message to all webhooks
+  allNotifiers.forEach(notifier => notifier.notifyEmbed(startupEmbed));
 
   console.log('\n✅ Trade tracker is running!');
   console.log('   Listening for trades... (Press Ctrl+C to stop)\n');
@@ -526,7 +654,8 @@ async function main() {
       timestamp: new Date().toISOString(),
     };
 
-    discord.notifyEmbed(shutdownEmbed);
+    // Broadcast shutdown message to all webhooks
+    allNotifiers.forEach(notifier => notifier.notifyEmbed(shutdownEmbed));
 
     console.log('✅ Cleanup complete');
     
