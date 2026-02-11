@@ -40,9 +40,9 @@ import {
 
 // Target wallet addresses to track (add/remove addresses as needed)
 const TARGET_ADDRESSES = [
-  "0x6297b93ea37ff92a57fd636410f3b71ebf74517e",
+  "0x594edb9112f526fa6a80b8f858a6379c8a2c1c11",
 ];
-
+const betThreshold = 5
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const BROADCAST_NODES_JSON = process.env.BROADCAST_NODES_JSON;
 
@@ -480,6 +480,8 @@ async function main() {
         // Calculate USDC amount
         const usdcAmount = trade.size * trade.price;
 
+        // Bet threshold
+        const isExceedBetThreshold =  (usdcAmount > betThreshold) ? true  : false
         // Format timestamp (UTC+8)
         const time = formatTimeUTC8(trade.timestamp);
 
@@ -542,7 +544,7 @@ async function main() {
 
         // Send to Discord via address-based routing
         const notifier = addressToNotifier.get(traderAddress);
-        if (notifier) {
+        if (isExceedBetThreshold && notifier) {
           notifier.notifyEmbed(embed);
           console.log('  ✅ Notification sent to Discord');
         } else {
